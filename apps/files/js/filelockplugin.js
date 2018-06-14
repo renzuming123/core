@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 Vincent Petry <pvince81@owncloud.com>
+ * Copyright (c) 2013-2014 Lukas Reschke <lukas@owncloud.com>
  *
  * This file is licensed under the Affero General Public License version 3
  * or later.
@@ -9,108 +9,130 @@
  */
 
 (function(OCA) {
+
+	OCA.Files = OCA.Files || {};
+
 	/**
-	 * @namespace OCA.Files.FavoritesPlugin
-	 *
-	 * Registers the favorites file list from the files app sidebar.
+	 * @namespace OCA.Files.LockPlugin
 	 */
-	OCA.Files.FavoritesPlugin = {
-		name: 'Favorites',
+	OCA.Files.LockPlugin = {
 
 		/**
-		 * @type OCA.Files.FavoritesFileList
+		 * @param fileList
 		 */
-		favoritesFileList: null,
+		attach: function(fileList) {
+			this._extendFileActions(fileList);
 
-		attach: function() {
-			var self = this;
-			$('#app-content-favorites').on('show.plugin-favorites', function(e) {
-				self.showFileList($(e.target));
-			});
-			$('#app-content-favorites').on('hide.plugin-favorites', function() {
-				self.hideFileList();
-			});
-		},
-
-		detach: function() {
-			if (this.favoritesFileList) {
-				this.favoritesFileList.destroy();
-				OCA.Files.fileActions.off('setDefault.plugin-favorites', this._onActionsUpdated);
-				OCA.Files.fileActions.off('registerAction.plugin-favorites', this._onActionsUpdated);
-				$('#app-content-favorites').off('.plugin-favorites');
-				this.favoritesFileList = null;
-			}
-		},
-
-		showFileList: function($el) {
-			if (!this.favoritesFileList) {
-				this.favoritesFileList = this._createFavoritesFileList($el);
-			}
-			return this.favoritesFileList;
-		},
-
-		hideFileList: function() {
-			if (this.favoritesFileList) {
-				this.favoritesFileList.$fileList.empty();
-			}
-		},
-
-		/**
-		 * Creates the favorites file list.
-		 *
-		 * @param $el container for the file list
-		 * @return {OCA.Files.FavoritesFileList} file list
-		 */
-		_createFavoritesFileList: function($el) {
-			var fileActions = this._createFileActions();
-			// register favorite list for sidebar section
-			return new OCA.Files.FavoritesFileList(
-				$el, {
-					fileActions: fileActions,
-					scrollContainer: $('#app-content')
+			var oldCreateRow = fileList._createRow;
+			fileList._createRow = function(fileData) {
+				var $tr = oldCreateRow.apply(this, arguments);
+				if (fileData.activeLocks) {
+					$tr.attr('data-activeLocks', JSON.stringify(fileData.activeLocks));
 				}
-			);
-		},
+				return $tr;
+			};
+			var oldElementToFile = fileList.elementToFile;
+			fileList.elementToFile = function($el) {
+				var fileInfo = oldElementToFile.apply(this, arguments);
+				var activeLocks = $el.attr('data-activelocks');
+				if (_.isUndefined(activeLocks)) {
+					activeLocks = '';
+				}
+				fileInfo.activeLocks = JSON.parse(activeLocks);
+				return fileInfo;
+			};
 
-		_createFileActions: function() {
-			// inherit file actions from the files app
-			var fileActions = new OCA.Files.FileActions();
-			// note: not merging the legacy actions because legacy apps are not
-			// compatible with the sharing overview and need to be adapted first
-			fileActions.registerDefaultActions();
-			fileActions.merge(OCA.Files.fileActions);
+			var oldGetWebdavProperties = fileList._getWebdavProperties;
+			fileList._getWebdavProperties = function() {
+				var props = oldGetWebdavProperties.apply(this, arguments);
+				props.push('{DAV:}lockdiscovery');
+				return props;
+			};
 
-			if (!this._globalActionsInitialized) {
-				// in case actions are registered later
-				this._onActionsUpdated = _.bind(this._onActionsUpdated, this);
-				OCA.Files.fileActions.on('setDefault.plugin-favorites', this._onActionsUpdated);
-				OCA.Files.fileActions.on('registerAction.plugin-favorites', this._onActionsUpdated);
-				this._globalActionsInitialized = true;
-			}
+			var lockTab = new OCA.Files.LockTabView('lockTabView', {order: -20});
+			fileList.registerTabView(lockTab);
 
-			// when the user clicks on a folder, redirect to the corresponding
-			// folder in the files app instead of opening it directly
-			fileActions.register('dir', 'Open', OC.PERMISSION_READ, '', function (filename, context) {
-				OCA.Files.App.setActiveView('files', {silent: true});
-				OCA.Files.App.fileList.changeDirectory(OC.joinPaths(context.$file.attr('data-path'), filename), true, true);
+			fileList.filesClient.addFileInfoParser(function(response) {
+				var data = {};
+				var props = response.propStat[0].properties;
+				var activeLocks = props['{DAV:}lockdiscovery'];
+				if (!_.isUndefined(activeLocks) && activeLocks !== '') {
+					data.activeLocks = _.chain(activeLocks).filter(function(xmlvalue) {
+						return (xmlvalue.namespaceURI === OC.Files.Client.NS_DAV && xmlvalue.nodeName.split(':')[1] === 'activelock');
+					}).map(function(xmlvalue) {
+						return {
+							lockscope: xmlvalue.getElementsByTagName('d:lockscope')[0].children[0].localName,
+							locktype: xmlvalue.getElementsByTagName('d:locktype')[0].children[0].localName,
+							lockroot: xmlvalue.getElementsByTagName('d:lockroot')[0].children[0].innerHTML,
+							depth: parseInt(xmlvalue.getElementsByTagName('d:depth')[0].innerHTML, 10),
+							timeout: xmlvalue.getElementsByTagName('d:timeout')[0].innerHTML,
+							locktoken: xmlvalue.getElementsByTagName('d:locktoken')[0].children[0].innerHTML,
+							owner: xmlvalue.getElementsByTagName('d:owner')[0].innerHTML
+						};
+					}).value();
+
+				}
+				return data;
 			});
-			fileActions.setDefault('dir', 'Open');
-			return fileActions;
+
+
 		},
 
-		_onActionsUpdated: function(ev) {
-			if (ev.action) {
-				this.favoritesFileList.fileActions.registerAction(ev.action);
-			} else if (ev.defaultAction) {
-				this.favoritesFileList.fileActions.setDefault(
-					ev.defaultAction.mime,
-					ev.defaultAction.name
-				);
-			}
+		/**
+		 * @param fileList
+		 * @private
+		 */
+		_extendFileActions: function(fileList) {
+			// fileActions.registerAction({
+			// 	name: 'lock',
+			// 	displayName: t('files', 'Lock file or folder'),
+			// 	mime: 'all',
+			// 	permissions: OC.PERMISSION_READ,
+			// 	iconClass: 'icon-lock-closed',
+			// 	actionHandler: function(fileName, context) {
+			// 		alert('Locked!');
+			// 	}
+			// });
+			// fileActions.registerAction({
+			// 	name: 'unlock',
+			// 	displayName: t('files', 'Unlock file or folder'),
+			// 	mime: 'all',
+			// 	permissions: OC.PERMISSION_READ,
+			// 	iconClass: 'icon-lock-open',
+			// 	actionHandler: function(fileName, context) {
+			// 		alert('Unlocked!');
+			// 	}
+			// });
+			fileList.fileActions.registerAction({
+				name: 'lock-status',
+				displayName: t('files', 'Lock status'),
+				mime: 'all',
+				permissions: OC.PERMISSION_READ,
+				type: OCA.Files.FileActions.TYPE_INLINE,
+				render: function(actionSpec, isDefault, context) {
+					var $file = context.$file;
+					var isLocked = $file.data('activelocks');
+					if (isLocked) {
+						// TODO: use handlebars
+						var message = t('files', 'File/folder is locked by {owner}. Click to release the lock.', {
+							owner: isLocked[0].owner
+						});
+						var $actionLink = $('<a class="action action-comment permanent" title="' + message + '" href="#">' +
+							'<span class="icon icon-lock-open" /></a>');
+						context.$file.find('a.name>span.fileactions').append($actionLink);
+						return $actionLink;
+					}
+					return '';
+				},
+				actionHandler: function(fileName) {
+					fileList.showDetailsView(fileName, 'lockTabView');
+				}
+			});
+
 		}
 	};
 
 })(OCA);
 
-OC.Plugins.register('OCA.Files.App', OCA.Files.FavoritesPlugin);
+OC.Plugins.register('OCA.Files.FileList', OCA.Files.LockPlugin);
 
