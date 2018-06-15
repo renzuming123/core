@@ -160,7 +160,8 @@ class Scan extends Base {
 		$repairStep = new RepairMismatchFileCachePath(
 			$connection,
 			$this->mimeTypeLoader,
-			$this->logger
+			$this->logger,
+			$this->config
 		);
 		$repairStep->setStorageNumericId(null);
 		$repairStep->setCountOnly(false);
@@ -183,7 +184,8 @@ class Scan extends Base {
 					$repairStep = new RepairMismatchFileCachePath(
 						$connection,
 						$this->mimeTypeLoader,
-						$this->logger
+						$this->logger,
+						$this->config
 					);
 					$repairStep->setStorageNumericId($storage->getCache()->getNumericStorageId());
 					$repairStep->setCountOnly(false);

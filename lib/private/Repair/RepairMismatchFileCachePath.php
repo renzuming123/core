@@ -21,6 +21,7 @@
 
 namespace OC\Repair;
 
+use OCP\IConfig;
 use OCP\ILogger;
 use OCP\Migration\IOutput;
 use OCP\Migration\IRepairStep;
@@ -58,15 +59,19 @@ class RepairMismatchFileCachePath implements IRepairStep {
 	/** @var ILogger  */
 	protected $logger;
 
+	/** @var IConfig  */
+	protected $config;
+
 	/**
 	 * @param \OCP\IDBConnection $connection
 	 */
 	public function __construct(IDBConnection $connection,
 								IMimeTypeLoader $mimeLoader,
-								ILogger $logger) {
+								ILogger $logger, IConfig $config) {
 		$this->connection = $connection;
 		$this->mimeLoader = $mimeLoader;
 		$this->logger = $logger;
+		$this->config = $config;
 	}
 
 	public function getName() {
@@ -539,38 +544,42 @@ class RepairMismatchFileCachePath implements IRepairStep {
 	 * @param IOutput $out output
 	 */
 	public function run(IOutput $out) {
+		$currentOCVersion = $this->config->getSystemValue('version', '0.0.0');
+		if (\version_compare($currentOCVersion, '10.0.4', '<')) {
+			$this->dirMimeTypeId = $this->mimeLoader->getId('httpd/unix-directory');
+			$this->dirMimePartId = $this->mimeLoader->getId('httpd');
 
-		$this->dirMimeTypeId = $this->mimeLoader->getId('httpd/unix-directory');
-		$this->dirMimePartId = $this->mimeLoader->getId('httpd');
-
-		if ($this->countOnly) {
-			$this->reportAffectedStoragesParentIdWrongPath($out);
-			$this->reportAffectedStoragesNonExistingParentIdEntry($out);
-		} else {
-			$brokenPathEntries = $this->countResultsToProcessParentIdWrongPath($this->storageNumericId);
-			$brokenParentIdEntries = $this->countResultsToProcessNonExistingParentIdEntry($this->storageNumericId);
-			$out->startProgress($brokenPathEntries + $brokenParentIdEntries);
-
-			$totalFixed = 0;
-
-			/*
-			 * This repair itself might overwrite existing target parent entries and create
-			 * orphans where the parent entry of the parent id doesn't exist but the path matches.
-			 * This needs to be repaired by fixEntriesWithNonExistingParentIdEntry(), this is why
-			 * we need to keep this specific order of repair.
-			 */
-			$affectedStorages = $this->fixEntriesWithCorrectParentIdButWrongPath($out, $this->storageNumericId);
-
-			if ($this->storageNumericId !== null) {
-				foreach ($affectedStorages as $storageNumericId) {
-					$this->fixEntriesWithNonExistingParentIdEntry($out, $storageNumericId);
-				}
+			if ($this->countOnly) {
+				$this->reportAffectedStoragesParentIdWrongPath($out);
+				$this->reportAffectedStoragesNonExistingParentIdEntry($out);
 			} else {
-				// just fix all
-				$this->fixEntriesWithNonExistingParentIdEntry($out);
+				$brokenPathEntries = $this->countResultsToProcessParentIdWrongPath($this->storageNumericId);
+				$brokenParentIdEntries = $this->countResultsToProcessNonExistingParentIdEntry($this->storageNumericId);
+				$out->startProgress($brokenPathEntries + $brokenParentIdEntries);
+
+				$totalFixed = 0;
+
+				/*
+				 * This repair itself might overwrite existing target parent entries and create
+				 * orphans where the parent entry of the parent id doesn't exist but the path matches.
+				 * This needs to be repaired by fixEntriesWithNonExistingParentIdEntry(), this is why
+				 * we need to keep this specific order of repair.
+				 */
+				$affectedStorages = $this->fixEntriesWithCorrectParentIdButWrongPath($out, $this->storageNumericId);
+
+				if ($this->storageNumericId !== null) {
+					foreach ($affectedStorages as $storageNumericId) {
+						$this->fixEntriesWithNonExistingParentIdEntry($out, $storageNumericId);
+					}
+				} else {
+					// just fix all
+					$this->fixEntriesWithNonExistingParentIdEntry($out);
+				}
+				$out->finishProgress();
+				$out->info('');
 			}
-			$out->finishProgress();
-			$out->info('');
+		} else {
+			$out->info('Skipping this repair step since the current version is greater than 10.0.4.');
 		}
 	}
 }
